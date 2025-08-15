@@ -2,7 +2,9 @@
 title: "Rapport de laboratoire 6"
 subtitle: "MTH8408"
 author:
-  - name: Votre nom
+
+- name: Jouglet Nicolas
+
     email: votre.adresse@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
@@ -28,6 +30,19 @@ engine: julia
 VERSION == v"1.11.5" || error("please use julia version 1.11.5")
 using Pkg
 Pkg.activate("labo11_env")
+
+# Pkg.add("ADNLPModels")
+# Pkg.add("NLPModels")
+# Pkg.add("OptimizationProblems")
+# Pkg.add("NLPModelsModifiers")
+#  Pkg.add("Dates")
+# Pkg.add("SolverCore")
+# Pkg.add("NLPModelsIpopt")
+# Pkg.add("Printf")
+# Pkg.add("JuMP")
+# Pkg.add("Ipopt")
+
+using OptimizationProblems, ADNLPModels, NLPModels, DataFrames, LinearAlgebra, NLPModelsModifiers, Dates, SolverCore, NLPModelsIpopt,Printf, JuMP, Ipopt
 ```
 
 # Question 1
@@ -36,23 +51,235 @@ Implémenter la condition d'Armijo modifiée et la méthode du gradient projeté
 Votre implémentation doit accepter des contraintes définies par un ensemble "simple" $C$.
 
 ```{julia}
-# votre code ici
+
+abstract type AbstractSimpleSet end;
+
+projection!(x, C::AbstractSimpleSet) = error("projection into a set of type $(typeof(C)) is not implemented")
+
+mutable struct SimpleBounds{V} <: AbstractSimpleSet where V <: AbstractVector
+  ℓ::V  # vector of lower bounds
+  u::V  # vector of upper bounds
+  function SimpleBounds(ℓ::V, u::V) where V <: AbstractVector
+  length(ℓ) == length(u) || throw(ArgumentError("Les vecteurs de bornes doivent avoir la même longueur."))
+  new{V}(ℓ, u)
+end
+end
+
+
+function projection!(x::V, C::SimpleBounds{V}) where V <: AbstractVector
+  ℓ = C.ℓ
+  u = C.u
+  x .= min.(max.(x, ℓ), u)
+  x
+end
+
+function SimpleBounds(model::AbstractNLPModel{T, V}) where {T, V}
+  ℓ = model.meta.lvar
+  u = model.meta.uvar
+  SimpleBounds(ℓ, u)
+end
+
+
+function armijo(C::AbstractSimpleSet, model::AbstractNLPModel, fx, x::V, ∇f::V) where V  
+
+  # Initial step size
+  t = one(eltype(V))
+  α = 10^(-4)
+  xt=copy(x)
+
+  while true
+    xt=projection!(x.-t*∇f, C)
+    if obj(model,xt) <= fx - α * norm(x .- xt)^2 / t
+      break
+    end
+    t *= 0.5
+    if t < 1e-12
+            println("Pas trop petit, arrêt prématuré")
+            break
+        end
+  end
+  
+  return t, xt
+end
+
+function projected_gradient(
+    model::AbstractNLPModel{T,V},
+    C::AbstractSimpleSet;
+    ϵa::T = eps(T)^(1/3),
+    ϵr::T = eps(T)^(1/3),
+    max_iter::Int = 1_000
+) where {T,V}
+
+    start_time = time()
+    x = copy(model.meta.x0)
+    projection!(x, C) # x dans C
+        
+    k = 0
+    converged = false
+
+    while k < max_iter
+    fk = obj(model, x)
+    gk = grad(model, x)
+
+    # Pour convergence uniquement
+    gk_proj = x .- projection!(x .- gk, C)
+    t, xt = armijo(C, model, fk, x, gk)
+    @printf("Itération %4d : f(x) = %.6e, ||grad_proj|| = %.2e, t = %.2e\n", k, fk, norm(gk_proj), t)
+
+    if norm(gk_proj) < ϵa + ϵr * norm(x)
+        println("Convergence atteinte : norme du résidu projeté = $(norm(gk_proj))")
+        converged = true
+        break
+    end
+
+    # Descente avec Armijo classique
+    
+    x .= xt
+    k += 1
+end
+
+    elapsed_time = time() - start_time
+
+    return GenericExecutionStats(
+    model;
+    solution = x,
+    objective = obj(model, x),
+    dual_feas = norm(grad(model, x)),
+    iter = k,
+    elapsed_time = time() - start_time,
+    status = converged ? :first_order : :max_iter
+)
+
+end
+
+
+using OptimizationProblems, ADNLPModels, NLPModels, LinearAlgebra
+
+
+function check_bounds(x::AbstractVector, C::SimpleBounds)
+    ℓ, u = C.ℓ, C.u
+    for i in eachindex(x)
+        if x[i] < ℓ[i] - 1e-8 || x[i] > u[i] + 1e-8
+            println("Variable x[$i] = $(x[i]) hors des bornes [$(ℓ[i]), $(u[i])]")
+        end
+    end
+    println("Vérification des bornes terminée.")
+end
+
+
+function borne(C::SimpleBounds, x::AbstractVector)
+    println("Vérification des bornes (format : borne_inf ≤ x[i] ≤ borne_sup) :")
+    @printf("%-8s │ %-12s │ %-12s │ %-12s\n", "Index", "Borne inf", "Valeur", "Borne sup")
+    println("──────────┼──────────────┼──────────────┼──────────────")
+    for i in eachindex(x)
+        @printf("x[%-3d] │ % .3e     │ % .3e     │ % .3e\n", i, C.ℓ[i], x[i], C.u[i])
+    end
+end
+
+
+
 ```
+
 
 # Question 2
 
 Tester votre implémentation et comparer la solution finale à celle de IPOPT sur 3 problèmes tirés de `OptimizationProblems`.
 
 ```{julia}
-# votre code ici
+using OptimizationProblems
+
+meta = OptimizationProblems.meta
+
+# Masque : seulement bornes, aucune contrainte, et exactement 10 variables
+mask = meta.has_bounds .& (meta.ncon .== 0) .& (meta.nvar .>= 10)
+
+# Liste des problèmes filtrés
+problem_list = meta[mask, :name]
+
+println(problem_list)
 ```
+
+# Problème 1 
+
+```{julia}
+p1= OptimizationProblems.ADNLPProblems.bearing()
+C1=SimpleBounds(p1)
+
+
+stats1_p = projected_gradient(p1, C1)
+
+```
+
+```{julia}
+# check_bounds(stats1_p.solution, C1)
+# borne(C1,stats1_p.solution)
+```
+
+```{julia}
+stats1 = ipopt(p1)
+println("Résultats avec Ipopt :")
+println( "f* = ", stats1.objective)
+```
+
+# Problème 2 
+
+```{julia}
+p2=OptimizationProblems.ADNLPProblems.hs110()
+C2=SimpleBounds(p2)
+
+
+stats2_p = projected_gradient(p2,C2)
+# check_bounds(stats2_p.solution, C2)
+
+```
+
+```{julia}
+stats2 = ipopt(p2)
+println("Résultats avec Ipopt :")
+println( "f* = ", stats2.objective)
+```
+
+# Problème 3 
+```{julia}
+p3=OptimizationProblems.ADNLPProblems.threepk()
+C3=SimpleBounds(p3)
+
+
+
+stats3_p =projected_gradient(p3,C3)
+# check_bounds(stats3_p.solution, C3)
+
+```
+
+```{julia}
+stats3 = ipopt(p3)
+println("Résultats avec Ipopt :")
+println( "f* = ", stats3.objective)
+```
+
+## Analyse
+La méthode de Ipopt mets globalement moins d'itération que le gradient projeté mais les deux méthodes trouvent les mêmes solutions pour ces trois problèmes.  
+Pour le troisième problème la méthode du gradient projeté arrive au nombre d'itération maximum. On remarque qu'à partir d'un certain nombre d'itération, le gradient switch entre 2 valeurs. L'algorithme stagne sur la frontière  avec des pas très petits 
 
 # Questions 3
 
 Implémenter une structure et la fonction de projection pour une boule euclidienne.
 
 ```{julia}
-# votre code ici
+
+
+struct EuclideanBall
+    center::Vector{Float64}  # centre c
+    radius::Float64          # rayon R
+end
+
+function projection_boule(x::Vector{Float64}, B::EuclideanBall)
+    d = x .- B.center
+    nd = norm(d)
+    nd <= B.radius ? x : (B.center .+ (B.radius/nd) .* d)
+end
+
+
 ```
 
 # Question 4
@@ -62,6 +289,149 @@ Votre solution pourrait-elle être utilisée pour calculer un pas dans une méth
 Expliquer.
 
 ```{julia}
-# votre code ici
+using LinearAlgebra, Printf
+
+# Quadratique : q(x) = 0.5*x'H*x + g'x
+q(x,H,g)     = 0.5*dot(x, H*x) + dot(g, x)
+∇q(x,H,g)    = H*x + g
+
+"""
+Résout min 0.5 x'Hx + g'x  s.c.  ||x - c|| <= R
+par Gradient Projeté sur la boule euclidienne (projection_boule).
+
+- Si H ≻ 0 et la solution non contrainte est dans la boule, on la renvoie.
+- Sinon, itérations x_{k+1} = Proj_B( x_k - α_k ∇q(x_k) ) avec backtracking d'Armijo.
+
+Arguments clés:
+  H::Symmetric      (pas besoin d'être défini positif)
+  g::Vector
+  B::EuclideanBall  (ta structure)
+Options:
+  x0       point initial (par défaut centre de la boule)
+  maxit    nb itérations max
+  tol      tolérance (norme du gradient projeté)
+  alpha0   pas initial pour le backtracking
+  beta     facteur de réduction du pas
+  sigma    paramètre d'Armijo
+"""
+
+
+function solve_qp_on_ball_projected(H::Symmetric{Float64,Matrix{Float64}},
+                                    g::Vector{Float64},
+                                    B::EuclideanBall;
+                                    x0::Vector{Float64}=copy(B.center),
+                                    maxit::Int=500,
+                                    tol::Float64=1e-8,
+                                    alpha0::Float64=1.0,
+                                    beta::Float64=0.5,
+                                    sigma::Float64=1e-4)
+
+    q(x)  = 0.5*dot(x, H*x) + dot(g, x)
+    ∇q(x) = H*x + g
+
+    start_time = time()
+    x = copy(x0)
+    fx = q(x)
+
+    println("Début du gradient projeté sur boule euclidienne")
+    println("------------------------------------------------")
+
+    for k in 1:maxit
+        gk = ∇q(x)
+        accepted = false
+        gproj_norm2 = Inf
+        α = alpha0
+
+        while α > 1e-16
+            y = projection_boule(x .- α .* gk, B)
+            d = y .- x
+            ftrial = q(y)
+
+            gproj_norm2 = sum((x .- y).^2) / max(α^2, 1e-16)
+
+            if ftrial <= fx - sigma * α * gproj_norm2
+                x, fx = y, ftrial
+                accepted = true
+                break
+            end
+            α *= beta
+        end
+
+        @printf("Itération %4d : f(x) = %.6e, ||grad_proj|| = %.2e, α = %.2e, accepté = %s\n",
+                k, fx, sqrt(gproj_norm2), α, accepted)
+
+        if sqrt(gproj_norm2) <= tol || !accepted
+            elapsed = time() - start_time
+            println("Arrêt après $k itérations : statut = $(accepted ? "convergé" : "stallé")")
+            println("Temps écoulé = $(round(elapsed,digits=3)) s")
+            return x, fx, k, (accepted ? :converged : :stalled)
+        end
+    end
+
+    elapsed = time() - start_time
+    println("Max it atteint ($maxit). Temps écoulé = $(round(elapsed,digits=3)) s")
+    return x, q(x), maxit, :maxit
+end
+
 ```
+
+```{julia}
+# -------------------------------
+#  Exemple d'utilisation
+# -------------------------------
+n = 10
+A = randn(n,n)
+H = Symmetric(A - 2.0I)      # Hessien possiblement non convexe
+g = randn(n)
+Δ = 1.0
+B = EuclideanBall(zeros(n), Δ)
+
+x_sol = solve_qp_on_ball_projected(H, g, B; tol=1e-10)[1]
+f(x) = 0.5*x' * H * x + g' * x
+
+@printf("Solution: f(x*) = %.8e,  ||x*|| = %.6f (Δ = %.6f)\n", f(x_sol), norm(x_sol - B.center), B.radius)
+
+```
+
+```{julia}
+
+R = 1.0
+
+# Modèle
+model = Model(Ipopt.Optimizer)
+@variable(model, x[1:n])
+@objective(model, Min, 0.5 * dot(x, H * x) + dot(g, x))
+@NLconstraint(model, sum(x[i]^2 for i in 1:n) <= R)
+
+# Optionnel : point de départ
+x0 = randn(n)
+for i in 1:n
+    set_start_value(x[i], x0[i])
+end
+
+set_silent(model)
+set_optimizer_attribute(model, "tol", 1e-10)
+
+t_start = time()
+optimize!(model)
+elapsed = time() - t_start
+
+x_sol = value.(x)
+f_sol = objective_value(model)
+
+@printf("Solution sur la boule : f = %.8e, ||x|| = %.6f, temps = %.3fs\n",
+        f_sol, norm(x_sol), elapsed)
+
+```
+
+Dans les méthodes de région de confiance, à chaque itération on résout
+
+$$
+\min_{s}\; m(s)=g^{\top}s+\tfrac{1}{2}\,s^{\top}Hs
+\quad \text{s.c.}\quad \|s\|\le \Delta .
+$$
+
+Dans notre cas, cela revient à résoudre le même type de problème, mais en considérant la boule centrée en $x_k$ plutôt qu’en l’origine. 
+Par ailleur, toute fonction deux fois dérivable peut être approximée par une fonction quadratique locale via le développement de Taylor. 
+Cette propriété nous permet d'utiliser cet algorithme pour résoudre des problème d'optimisation avec des fonction objectifs C2.
 
