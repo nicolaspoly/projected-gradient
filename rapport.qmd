@@ -29,16 +29,16 @@ engine: julia
 using Pkg
 Pkg.activate("labo11_env")
 
-# Pkg.add("ADNLPModels")
-# Pkg.add("NLPModels")
-# Pkg.add("OptimizationProblems")
-# Pkg.add("NLPModelsModifiers")
-#  Pkg.add("Dates")
-# Pkg.add("SolverCore")
-# Pkg.add("NLPModelsIpopt")
-# Pkg.add("Printf")
-# Pkg.add("JuMP")
-# Pkg.add("Ipopt")
+Pkg.add("ADNLPModels")
+Pkg.add("NLPModels")
+Pkg.add("OptimizationProblems")
+Pkg.add("NLPModelsModifiers")
+Pkg.add("Dates")
+Pkg.add("SolverCore")
+Pkg.add("NLPModelsIpopt")
+Pkg.add("Printf")
+Pkg.add("JuMP")
+Pkg.add("Ipopt")
 
 using OptimizationProblems, ADNLPModels, NLPModels, DataFrames, LinearAlgebra, NLPModelsModifiers, Dates, SolverCore, NLPModelsIpopt,Printf, JuMP, Ipopt
 ```
