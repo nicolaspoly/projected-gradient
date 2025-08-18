@@ -2,9 +2,7 @@
 title: "Rapport de laboratoire 6"
 subtitle: "MTH8408"
 author:
-
-- name: Jouglet Nicolas
-
+  - name: Jouglet Nicolas
     email: votre.adresse@polymtl.ca
     affiliation:
       - name: Polytechnique Montréal
