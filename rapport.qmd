@@ -39,6 +39,7 @@ Pkg.add("NLPModelsIpopt")
 Pkg.add("Printf")
 Pkg.add("JuMP")
 Pkg.add("Ipopt")
+Pkg.add("DataFrames")
 
 using OptimizationProblems, ADNLPModels, NLPModels, DataFrames, LinearAlgebra, NLPModelsModifiers, Dates, SolverCore, NLPModelsIpopt,Printf, JuMP, Ipopt
 ```
